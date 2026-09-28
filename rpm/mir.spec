@@ -301,6 +301,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/miral-shell.desktop
 %{_libdir}/%{name}/server-platform/input-evdev.so.%{mirplatforminput_sover}
 %{_libdir}/%{name}/server-platform/input-evdev-rs.so.%{mirplatforminput_sover}
 %{_libdir}/%{name}/server-platform/renderer-egl-generic.so.%{mirplatformgraphics_sover}
+%{_libdir}/%{name}/server-platform/software-blitter.so.%{mirplatformgraphics_sover}
 %{_libdir}/%{name}/server-platform/server-virtual.so.%{mirplatformgraphics_sover}
 %{_libdir}/%{name}/server-platform/server-x11.so.%{mirplatformgraphics_sover}
 
