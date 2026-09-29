@@ -144,6 +144,8 @@ Possible tags to filter on are:
  - base/graphics
  - base/window-management
  - base/graphics/output-config
+ - base/miral
+ - base/miral/magnifier
 
 (global-mouse-cursor-acceleration)=
 ### `mouse-cursor-acceleration`
