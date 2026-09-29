@@ -150,10 +150,7 @@ void OutputConfigurationOptions::Strategy::apply_scale_to(mg::UserDisplayConfigu
         return;
     }
 
-    auto const& mode_size = output.modes[output.current_mode_index].size;
-    auto const output_height = (output.orientation == mir_orientation_normal ||
-                                output.orientation == mir_orientation_inverted) ?
-        mode_size.height.as_int() : mode_size.width.as_int();
+    auto const output_height = output.extents().size.height.as_int();
 
     static auto constexpr steps = 4.0f;
     output.scale = std::max(std::round((steps * output_height) / *settings.autoscale_target) / steps, 1.0f);
