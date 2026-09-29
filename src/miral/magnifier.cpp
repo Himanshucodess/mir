@@ -182,6 +182,72 @@ struct Handles
     }
 };
 
+/// Tracks the last values received from live config so unchanged reloads do
+/// not overwrite runtime adjustments.
+struct ConfigValues
+{
+    struct Pending
+    {
+        std::optional<float> magnification;
+        std::optional<geom::Size> capture_size;
+    };
+
+    template<typename T>
+    bool changed(std::optional<T> ConfigValues::* slot, T const& val)
+    {
+        auto& cached = this->*slot;
+        if (cached == val)
+            return false;
+        cached = val;
+        return true;
+    }
+
+    template<typename T>
+    void clear(std::optional<T> ConfigValues::* slot)
+    {
+        (this->*slot).reset();
+    }
+
+    void update_magnification(float val)
+    {
+        if (changed(&ConfigValues::magnification, val))
+            pending_magnification = val;
+    }
+
+    void update_capture_dimension(std::optional<int> ConfigValues::* slot, int val)
+    {
+        if (changed(slot, val))
+            pending_capture_size = true;
+    }
+
+    Pending take_pending(geom::Size const& current_capture_size)
+    {
+        Pending result;
+        result.magnification = pending_magnification;
+        if (pending_capture_size)
+            result.capture_size = capture_size(current_capture_size);
+
+        pending_magnification.reset();
+        pending_capture_size = false;
+        return result;
+    }
+
+    geom::Size capture_size(geom::Size const& current_capture_size) const
+    {
+        return {
+            geom::Width(capture_width.value_or(current_capture_size.width.as_value())),
+            geom::Height(capture_height.value_or(current_capture_size.height.as_value()))};
+    }
+
+    std::optional<bool> enable;
+    std::optional<float> magnification;
+    std::optional<int> capture_width;
+    std::optional<int> capture_height;
+    std::optional<miral::Magnifier::Behavior> behavior;
+    std::optional<float> pending_magnification;
+    bool pending_capture_size{false};
+};
+
 struct State
 {
     void apply_geometry(
@@ -397,7 +463,33 @@ public:
         place(*s);
     }
 
-    geom::Size current_size() const { return render_scene_into_surface.capture_area().size; }
+    void update_config_magnification(float val)
+    {
+        config_values.update_magnification(val);
+    }
+
+    void update_config_capture_dimension(std::optional<int> ConfigValues::* slot, int val)
+    {
+        config_values.update_capture_dimension(slot, val);
+    }
+
+    ConfigValues::Pending take_pending_config()
+    {
+        auto const lock = state.lock();
+        return config_values.take_pending(render_scene_into_surface.capture_area().size);
+    }
+
+    template<typename T>
+    bool config_changed(std::optional<T> ConfigValues::* slot, T const& val)
+    {
+        return config_values.changed(slot, val);
+    }
+
+    template<typename T>
+    void clear_config(std::optional<T> ConfigValues::* slot)
+    {
+        config_values.clear(slot);
+    }
 
     void follow_cursor()
     {
@@ -839,6 +931,7 @@ private:
     };
 
     mir::Synchronised<State> state;
+    ConfigValues config_values;
     miral::RenderSceneIntoSurface render_scene_into_surface;
     std::shared_ptr<CursorObserver> cursor_observer;
     std::shared_ptr<DisplayConfigObserver> display_config_observer;
@@ -871,17 +964,27 @@ miral::Magnifier::Magnifier(live_config::Store& config_store)
         "Whether the magnifier is enabled",
         [this](live_config::Key const&, std::optional<bool> val)
         {
-            if (val.has_value())
+            if (!val.has_value())
             {
-                enable(*val);
+                self->clear_config(&ConfigValues::enable);
+                return;
             }
+
+            if (!self->config_changed(&ConfigValues::enable, *val))
+                return;
+            enable(*val);
         });
     config_store.add_float_attribute(
         {"magnifier", "magnification"},
         "The magnification scale ",
         default_magnification,
         [this](live_config::Key const&, std::optional<float> val)
-        { magnification(val.value_or(default_magnification)); });
+        {
+            if (!val.has_value())
+                return;
+
+            self->update_config_magnification(*val);
+        });
     config_store.add_int_attribute(
         {"magnifier", "capture_size", "width"},
         "The width of the rectangular region that will be magnified",
@@ -893,15 +996,14 @@ miral::Magnifier::Magnifier(live_config::Store& config_store)
                 mir::log_warning(
                     "Config key '%s' should be greater than 0",
                     key.to_string().c_str());
+                self->clear_config(&ConfigValues::capture_width);
                 return;
             }
 
             if (!val.has_value())
                 return;
 
-            auto size = self->current_size();
-            size.width = geom::Width(*val);
-            capture_size(size);
+            self->update_config_capture_dimension(&ConfigValues::capture_width, *val);
         });
     config_store.add_int_attribute(
         {"magnifier", "capture_size", "height"},
@@ -914,15 +1016,14 @@ miral::Magnifier::Magnifier(live_config::Store& config_store)
                 mir::log_warning(
                     "Config key '%s' should be greater than 0",
                     key.to_string().c_str());
+                self->clear_config(&ConfigValues::capture_height);
                 return;
             }
 
             if (!val.has_value())
                 return;
 
-            auto size = self->current_size();
-            size.height = geom::Height(*val);
-            capture_size(size);
+            self->update_config_capture_dimension(&ConfigValues::capture_height, *val);
         });
     config_store.add_string_attribute(
         {"magnifier", "behavior"},
@@ -930,16 +1031,36 @@ miral::Magnifier::Magnifier(live_config::Store& config_store)
         [this](live_config::Key const&, std::optional<std::string_view> val)
         {
             if (!val.has_value())
+            {
+                self->clear_config(&ConfigValues::behavior);
                 return;
+            }
 
+            Behavior behavior{Behavior::follow_cursor};
             if (*val == "follow_cursor")
-                set_behavior(Behavior::follow_cursor);
+                behavior = Behavior::follow_cursor;
             else if (*val == "freely_positioned")
-                set_behavior(Behavior::freely_positioned);
+                behavior = Behavior::freely_positioned;
             else
+            {
                 mir::log_warning(
                     "Config key 'magnifier.behavior' should be either 'follow_cursor' or 'freely_positioned'");
+                self->clear_config(&ConfigValues::behavior);
+                return;
+            }
+
+            if (!self->config_changed(&ConfigValues::behavior, behavior))
+                return;
+            set_behavior(behavior);
         });
+    config_store.on_done([this]
+    {
+        auto const pending = self->take_pending_config();
+        if (pending.magnification)
+            magnification(*pending.magnification);
+        if (pending.capture_size)
+            capture_size(*pending.capture_size);
+    });
 }
 
 miral::Magnifier& miral::Magnifier::enable(bool enabled)
